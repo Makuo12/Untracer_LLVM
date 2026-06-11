@@ -4,7 +4,7 @@
 #include <cstdlib>
 #include <cstdint>
 
-#define MAX_GUARDS 64000
+#define MAX_GUARDS 300000
 static uint8_t coverage_found[MAX_GUARDS];
 static uint32_t total_guards = 0;
 
@@ -12,7 +12,6 @@ static const uintptr_t *g_pcs_beg;
 static const uintptr_t *g_pcs_end;
 
 #define NO_COV __attribute__((no_sanitize("coverage")))
-#define MAX_GUARDS 64000
 
 
 // 1. Add NO_COV to the initialization function
@@ -41,14 +40,15 @@ extern "C" void __sanitizer_cov_trace_pc_guard(uint32_t *guard)
 {
     if (!*guard)
         return;
-
+    const char *write_out = std::getenv("COVERAGE");
+    if (write_out == nullptr)
+        return;
     uint32_t idx = *guard - 1;
     if (!coverage_found[idx])
     {
         coverage_found[idx] = 1;
-
         // Open the log file in append mode
-        FILE *f = fopen("./output/coverage_log.txt", "a");
+        FILE *f = fopen(write_out, "a");
         if (f)
         {
             fprintf(f, "%d\n", idx);

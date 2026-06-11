@@ -202,7 +202,6 @@ static std::size_t patch_from_csv(const char *bin_path, const char *csv_path)
         }
         if (write_trap(bin_path, pc))
         {
-            printf("  [+] trap written at pc=0x%lx (index=%zu)\n", pc, index);
             ++patched;
         }
     }
@@ -238,7 +237,7 @@ int main(int argc, char *argv[])
     }
     // After tracing finishes, open the coverage file and load indices into a vector
     std::string coverage_filename = "./output/coverage_log.txt";
-    // read_coverage_file(coverage_filename);
+    read_coverage_file(coverage_filename);
     std::cout << "Successfully loaded " << guards_hit.size() << " guard indices into the vector.\n";
     std::size_t patched = patch_from_csv(argv[1], argv[2]);
     printf("[done] %zu trap(s) written\n", patched);
