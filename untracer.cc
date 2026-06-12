@@ -8,7 +8,7 @@
 #include <sys/shm.h>
 #include <map>
 #include <dirent.h>
-// #include <capstone/capstone.h>
+#include <capstone/capstone.h>
 #include <sys/stat.h> 
 
 #include <fstream>
@@ -143,39 +143,39 @@ static bool write_trap(const char *bin_path, uintptr_t pc)
         return false;
     }
     // 3. Initialize Capstone Engine for x86_64
-    // csh handle;
-    // cs_insn *insn;
-    // size_t count;
+    csh handle;
+    cs_insn *insn;
+    size_t count;
 
-    // if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
-    // {
-    //     fprintf(stderr, "  [!] Failed to initialize Capstone disassembler\n");
-    //     return false;
-    // }
+    if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
+    {
+        fprintf(stderr, "  [!] Failed to initialize Capstone disassembler\n");
+        return false;
+    }
 
-    // // Disassemble the buffer we read
-    // count = cs_disasm(handle, code_buffer, bytes_read, pc, 1, &insn);
+    // Disassemble the buffer we read
+    count = cs_disasm(handle, code_buffer, bytes_read, pc, 1, &insn);
 
-    // bool safe_to_write = false;
-    // if (count > 0)
-    // {
-    //     // If the disassembler managed to decode at least 1 valid instruction,
-    //     // verify that it actually matches the exact address we wanted to patch.
-    //     if (insn[0].address == pc)
-    //     {
-    //         safe_to_write = true;
-    //     }
-    //     cs_free(insn, count);
-    // }
-    // cs_close(&handle);
+    bool safe_to_write = false;
+    if (count > 0)
+    {
+        // If the disassembler managed to decode at least 1 valid instruction,
+        // verify that it actually matches the exact address we wanted to patch.
+        if (insn[0].address == pc)
+        {
+            safe_to_write = true;
+        }
+        cs_free(insn, count);
+    }
+    cs_close(&handle);
 
-    // // 4. Perform the write safely if verified
-    // if (!safe_to_write)
-    // {
-    //     // This prevents the "ghost traps" caused by mid-instruction corruption!
-    //     printf("  [-] Skipping unsafe misalignment at PC: 0x%lx\n", pc);
-    //     return false;
-    // }
+    // 4. Perform the write safely if verified
+    if (!safe_to_write)
+    {
+        // This prevents the "ghost traps" caused by mid-instruction corruption!
+        printf("  [-] Skipping unsafe misalignment at PC: 0x%lx\n", pc);
+        return false;
+    }
 
     // Move write pointer back to the validated offset location
     f.seekp(offset, std::ios::beg);
@@ -528,8 +528,14 @@ int main(int argc, char *argv[])
     while (true) {
 
         if (current >= entry_count) {
-            cout << "full pass done" << endl;
-            exit(1);
+            current = 0;
+            auto count = 0;
+            for (int i = 0; i < MAP_SIZE; ++i) {
+                if (trace_blocks[i] == 1) {
+                    count++;
+                }
+            }
+            cout << "full pass done" << " trace count: " << count << endl;
         }
         if (result) {
             copy_binary(trace, oracle);

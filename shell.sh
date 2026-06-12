@@ -1,5 +1,5 @@
-clang++ -c libtracer.cpp -o ./output/tracer.o
-wrap="/home/makuo12/Documents/forte-research/learn_wrap"
+clang++ -c libtracer.cpp -I include -o ./output/tracer.o
+wrap="/home/makuo12/Documents/forte-research/untracer_llvm"
 
 echo "Building xpdf with custom coverage tracer..."
 cd $wrap/xpdf-4.06_2

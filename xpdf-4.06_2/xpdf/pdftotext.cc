@@ -132,8 +132,6 @@ static ArgDesc argDesc[] = {
 };
 
 int main(int argc, char *argv[]) {
-  printf("starting pdftotext... \n");
-  printf("pdf file %s\n", argv[1]);
 #if USE_EXCEPTIONS
   try {
 #endif
