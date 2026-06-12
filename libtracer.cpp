@@ -1,23 +1,49 @@
 #include <stdio.h>
 #include <stdint.h>
+#include <sys/shm.h>
+
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include <cstring>
 
-#define MAX_GUARDS 300000
-static uint8_t coverage_found[MAX_GUARDS];
+#include "config.h"
+#include "types.h"
+
+// static uint8_t coverage_found[MAP_SIZE];
 static uint32_t total_guards = 0;
 
 static const uintptr_t *g_pcs_beg;
 static const uintptr_t *g_pcs_end;
 
+static u8 * trace_blocks;
+
 #define NO_COV __attribute__((no_sanitize("coverage")))
 
+NO_COV
+void init_blocks(void)
+{
+    const char *shm_env = getenv(SHM_ID_ENV);
+    if (shm_env == NULL || strlen(shm_env) == 0)
+    {
+        fprintf(stderr, "[Tracer] no shm id");
+        exit(1);
+    }
+    int shm_id = atoi(shm_env);
+    trace_blocks = (u8 *)shmat(shm_id, 0, 0);
+    if (trace_blocks == (u8 *)-1)
+    {
+        trace_blocks = NULL;
+        fprintf(stderr, "[Tracer] blocks not set");
+        exit(1);
+    }
+}
 
 // 1. Add NO_COV to the initialization function
 NO_COV 
 extern "C" void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop)
 {
+    init_blocks();
     if (start == stop || *start)
         return;
 
@@ -26,9 +52,9 @@ extern "C" void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *s
         *x = ++total_guards;
 
         // 2. Add \n so the buffer flushes to the screen immediately
-
-        if (total_guards >= MAX_GUARDS)
+        if (total_guards >= MAP_SIZE)
         {
+            fprintf(stderr, "[Tracer] blocks not set");
             exit(1);
         }
     }
@@ -40,20 +66,23 @@ extern "C" void __sanitizer_cov_trace_pc_guard(uint32_t *guard)
 {
     if (!*guard)
         return;
-    const char *write_out = std::getenv("COVERAGE");
+    const char *write_out = std::getenv(COVERAGE);
     if (write_out == nullptr)
         return;
     uint32_t idx = *guard - 1;
-    if (!coverage_found[idx])
+    if (trace_blocks == nullptr) {
+        fprintf(stderr, "[Tracer] trace block not found");
+        exit(1);
+    }
+    if (!trace_blocks[idx])
     {
-        coverage_found[idx] = 1;
-        // Open the log file in append mode
-        FILE *f = fopen(write_out, "a");
-        if (f)
-        {
-            fprintf(f, "%d\n", idx);
-            fclose(f);
-        }
+        trace_blocks[idx] = 1;
+        // FILE *f = fopen(write_out, "a");
+        // if (f)
+        // {
+        //     fprintf(f, "%d\n", idx);
+        //     fclose(f);
+        // }
     }
 }
 
@@ -63,7 +92,7 @@ extern "C" void __sanitizer_cov_pcs_init(
 {
     g_pcs_beg = pcs_beg;
     g_pcs_end = pcs_end;
-    const char *write_out = std::getenv("WRITE_OUT");
+    const char *write_out = std::getenv(WRITE_OUT);
     if (write_out == nullptr)
         return;
 
