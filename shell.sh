@@ -1,3 +1,5 @@
+rm -rf output
+mkdir -p output
 clang++ -c libtracer.cpp -I include -o ./output/tracer.o
 wrap="/home/makuo12/Documents/forte-research/untracer_llvm"
 
@@ -24,3 +26,8 @@ make pdftotext
 # 3. Copy the compiled binary back to your output directory (fixed typo)
 cp ./xpdf/pdftotext $wrap/output/pdftotext
 cd ../..
+
+# 4. Setup basic blocks (gotten from  __sanitizer_cov_pcs_init)
+export WRITE_OUT="./output/text" 
+export COVERAGE="./output/coverage_log.txt" 
+./output/pdftotext > /dev/null 2>&1

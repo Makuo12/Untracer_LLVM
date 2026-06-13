@@ -70,7 +70,7 @@ extern "C" void __sanitizer_cov_trace_pc_guard(uint32_t *guard)
     if (!*guard)
         return;
     const char *write_out = std::getenv(COVERAGE);
-    if (write_out == nullptr)
+    if (write_out != nullptr)
         return;
     uint32_t idx = *guard - 1;
     if (trace_blocks == nullptr) {

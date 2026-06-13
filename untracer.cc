@@ -14,25 +14,63 @@
 #include <fstream>
 #include <iostream>
 #include <vector>
+#include <ctime>
 #include <cstring>
 #include <iterator>
 #include <cstdio>
+#include <chrono>
 #include <cstdlib>
 #include <cstdint>
 #include <cstring>
 
 #include "data.h"
 #include "config.h"
+#include "types.h"
 
 using namespace std;
-typedef unsigned char u8;
-typedef unsigned long long u64;
 int total_paths_found = 0;
 int total_coverage_found = 0;
 
 static u8 * trace_blocks;
 
 std::vector<int> guards_hit;
+
+static u8 virgin_blocks[MAP_SIZE];
+
+Entry * all_entries = NULL;
+size_t entry_total_count = 0;
+size_t number_execs = 0;
+
+int capacity = 100;
+
+void add_file(const char *filename, const char *file_path, size_t size)
+{
+    if (filename == nullptr || file_path == nullptr)
+    {
+        cerr << "Error: null filename or file_path passed to add_file" << endl;
+        return;
+    }
+
+    if (entry_total_count >= (size_t)capacity)
+    {
+        size_t new_capacity = (capacity == 0) ? 1 : capacity * 2;
+        Entry *temp = (Entry *)realloc(all_entries, new_capacity * sizeof(Entry));
+        if (temp == nullptr)
+        {
+            cerr << "Memory reallocation failed while scanning entries" << endl;
+            exit(1);
+        }
+        all_entries = temp;
+        capacity = new_capacity;
+    }
+
+    Entry *current_entry = &all_entries[entry_total_count];
+    snprintf(current_entry->d_name, sizeof(current_entry->d_name), "%s", filename);
+    snprintf(current_entry->file_path, sizeof(current_entry->file_path), "%s", file_path);
+    current_entry->st_size = size;
+
+    entry_total_count++;
+}
 
 void files(Entry **entries, const char *in_dir, size_t *entry_count)
 {
@@ -53,7 +91,6 @@ void files(Entry **entries, const char *in_dir, size_t *entry_count)
     }
 
     // 4. Set up dynamic array variables to replicate std::vector behavior
-    int capacity = 10; // Start with an initial capacity
     *entry_count = 0;
     *entries = (Entry *)malloc(capacity * sizeof(Entry));
     if (*entries == NULL)
@@ -109,6 +146,22 @@ void files(Entry **entries, const char *in_dir, size_t *entry_count)
         exit(1);
     }
 }
+
+void suppress_output()
+{
+    int dev_null = open("/dev/null", O_WRONLY);
+    if (dev_null == -1)
+    {
+        perror("Failed to open /dev/null");
+        return;
+    }
+
+    dup2(dev_null, STDOUT_FILENO); // redirect stdout (fd 1)
+    dup2(dev_null, STDERR_FILENO); // redirect stderr (fd 2)
+
+    close(dev_null); // original fd no longer needed
+}
+
 
 void write_testcase(u8 *mem, Entry *entry, const char *input_file)
 {
@@ -241,7 +294,7 @@ void copy_binary(const char *src_path, const char *dst_path)
     }
 }
 
-void init_trace_bits(void)
+void init_trace_blocks(void)
 {
     int shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0666);
     if (shm_id < 0)
@@ -271,7 +324,7 @@ static void modify(const char *bin_path, map<int, uintptr_t> &bblist) {
     int patched = 0;
     for (auto begin = bblist.begin(); begin != bblist.end(); ++begin) {
         // found = false;
-        if (trace_blocks[begin->first] == 0)
+        if (virgin_blocks[begin->first] == 0)
         {
             if (write_trap(bin_path, begin->second))
             {
@@ -297,60 +350,50 @@ static void modify(const char *bin_path, map<int, uintptr_t> &bblist) {
     cout << "Trap was insert by: " << patched << endl;
 }
 
-// void read_coverage_file(const char * output)
-// {
-//     char buf[1024];
-//     size_t size = snprintf(NULL, 0, "%s/coverage.txt", output);
-//     if (size == 0) {
-//         cout << "output not found" << endl;
-//     }
-//     snprintf(buf, size + 1, "%s/coverage.txt", output);
-//     std::ifstream infile(buf);
-//     if (!infile.is_open())
-//     {
-//         std::cerr << "Warning: Could not open coverage file: " << buf << "\n";
-//         return;
-//     }
 
-//     std::string line;
-//     while (std::getline(infile, line))
-//     {
-//         // Expecting lines formatted as: "guard found <idx>"
-//         int idx = std::stoi(line);
-//         guards_hit.push_back(idx);
-//     }
-// }
-
-void clear_coverage(const char * coverage) {
-    int fd = open(coverage, O_CREAT | O_TRUNC, 0777);
-    if (fd < 0) {
-        cout << "coverage file could not open" << endl;
-        exit(1);
+bool has_new_block(void)
+{
+    bool found = false;
+    for (int i = 0; i < MAP_SIZE; ++i) {
+        if (trace_blocks[i] && virgin_blocks[i] == 0) {
+            found = true;
+            virgin_blocks[i] = 1;
+        }
     }
-    close(fd);
+    return found;
+}
+
+std::string generateTimestampFilename(const std::string &extension = ".pdf")
+{
+    std::time_t now = std::time(nullptr);
+    std::tm *localTime = std::localtime(&now);
+
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", localTime);
+
+    return std::string(buffer) + extension;
 }
 
 void trace_coverage(
     map<int, uintptr_t> &bblist,
     const char * trace,
     const char * input,
-    const char * output
+    const char * output,
+    const bool first_pass,
+    const size_t file_size
 )
 {
-    char buf[1024];
-    size_t size = snprintf(NULL, 0, "%s/coverage.txt", output);
-    if (size == 0) {
-        cout << "output not found" << endl;
-    }
-    snprintf(buf, size + 1, "%s/coverage.txt", output);
     char * argv[3];
+    memset(trace_blocks, 0, MAP_SIZE);
     argv[0] = const_cast<char *>(trace);
     argv[1] = const_cast<char *>(input);
     argv[2] = nullptr;
+    ++number_execs;
     pid_t pid = fork();
     if (pid == 0)
     {
-        setenv(COVERAGE, buf, 1);
+        // We dont set the environment because we want to calculate coverage in trace blocks
+        suppress_output();
         execvp(argv[0], argv);
         perror("execvp failed");
         exit(1);
@@ -359,7 +402,16 @@ void trace_coverage(
     {
         int status;
         waitpid(pid, &status, 0);
-        // read_coverage_file(output);
+        bool result = has_new_block();
+        if (result && !first_pass) {
+            // We only want to write out input if we are not in first pass and new block found
+            string timestamp = generateTimestampFilename();
+            char buf[1024];
+            size_t size = snprintf(NULL, 0, "./output/%s", timestamp.c_str());
+            snprintf(buf, size + 1, "./output/%s", timestamp.c_str());
+            copy_binary(input, buf);
+            add_file(timestamp.c_str(), buf, file_size);
+        }
     }
     else
     {
@@ -368,22 +420,31 @@ void trace_coverage(
     }
 }
 
+
 bool fork_child(
     map<int, uintptr_t> &bblist,
     const char * trace,
     const char * oracle,
     const char * input,
-    const char * output
+    const char * output,
+    const bool first_pass,
+    const size_t file_size
 ) {
     char *argv[3];
     argv[0] = const_cast<char *>(oracle);
     argv[1] = const_cast<char *>(input);
     argv[2] = nullptr;
+    ++number_execs;
+    // c passed in buf means nothing the env set just ensures there is no tracing happening
+    char buf[1024];
+    buf[0] = 'c';
     pid_t pid = fork();
     if (pid == 0)
     {
         // Child
         // ptrace(PTRACE_TRACEME, 0, NULL, NULL);
+        suppress_output();
+        setenv(COVERAGE, buf, 1);
         execvp(argv[0], argv);
     }
     int status;
@@ -413,7 +474,7 @@ bool fork_child(
         if (term_sig == SIGTRAP)
         {
             cout << "on trap signal" << endl;
-            trace_coverage(bblist, trace, input, output);
+            trace_coverage(bblist, trace, input, output, first_pass, file_size);
             return true;           // wait for next stop
         }
     }
@@ -468,6 +529,35 @@ u8 * read_file(Entry *entry) {
     return mem;
 }
 
+void first_pass(Entry *entries, size_t *entry_count, const char * trace,
+    const char * oracle, map<int, uintptr_t> &bblist, const char * input,
+    const char * output
+) {
+    bool result = false;
+    for (size_t i = 0; i < *entry_count; ++i) {
+        if (result) {
+            copy_binary(trace, oracle);
+            modify(oracle, bblist);
+            result = false;
+        }
+        Entry * entry = &entries[i];
+        if (entry->has_issues) {
+            continue;
+        }
+        u8 * mem = read_file(entry);
+        if (mem == nullptr) {
+            continue;
+        }
+        write_testcase(mem, entry, input);
+        munmap(mem, entry->st_size);
+        result = fork_child(bblist, trace, oracle, input, output, true, entry->st_size);
+    }
+}
+
+void mutate(u8 *mem, int position)
+{
+    mem[position >> 3] ^= (128 >> (position & 7));
+}
 
 int main(int argc, char *argv[])
 {
@@ -478,8 +568,6 @@ int main(int argc, char *argv[])
     const char *input = nullptr;
     const char *in_dir = nullptr;
     map<int, uintptr_t> bblist;
-    Entry * entries;
-    size_t entry_count = 0;
     int opt;
     while ((opt = getopt(argc, argv, "o:t:b:p:i:d:")) != -1)
     {
@@ -516,18 +604,34 @@ int main(int argc, char *argv[])
         return 1;
     }
     // After tracing finishes, open the coverage file and load indices into a vector
-    init_trace_bits();
+    init_trace_blocks();
     memset(trace_blocks, 0, MAP_SIZE);
-    files(&entries, in_dir, &entry_count);
+    memset(virgin_blocks, 0, MAP_SIZE);
+    files(&all_entries, in_dir, &entry_total_count);
     setup_bblist(bblist, blist);
     copy_binary(trace, oracle);
     modify(oracle, bblist);
+    string stat_filename = output + string("/stats");
+    {
+        ofstream filestream(stat_filename);
+        std::string header = "elapsed,current,execs\n";
+        filestream.write(header.c_str(), header.size());
+        filestream.close();
+    }
     std::cout << "Successfully loaded " << bblist.size() << " guard indices into the vector.\n";
+    std::cout << "Running full pass of all inputs" << endl;
+    first_pass(all_entries, &entry_total_count, trace, oracle, bblist, input, output);
+    std::cout << "Done with full pass of all inputs" << endl;
+    std::cout << "Running fuzzer with mutations" << endl;
+    cout << "Setting up timer" << endl;
+    auto start_time = std::chrono::system_clock::now();
+    std::time_t now_t = std::chrono::system_clock::to_time_t(start_time);
+    std::cout << "Start time: " << std::ctime(&now_t);
     bool result = false;
+    time_t time_count = 1 * TIME_SET;
     size_t current = 0;
     while (true) {
-
-        if (current >= entry_count) {
+        if (current >= entry_total_count) {
             current = 0;
             auto count = 0;
             for (int i = 0; i < MAP_SIZE; ++i) {
@@ -537,12 +641,7 @@ int main(int argc, char *argv[])
             }
             cout << "full pass done" << " trace count: " << count << endl;
         }
-        if (result) {
-            copy_binary(trace, oracle);
-            modify(oracle, bblist);
-            result = false;
-        }
-        Entry * entry = &entries[current++];
+        Entry * entry = &all_entries[current++];
         if (entry->has_issues) {
             continue;
         }
@@ -550,9 +649,39 @@ int main(int argc, char *argv[])
         if (mem == nullptr) {
             continue;
         }
-        write_testcase(mem, entry, input);
+        size_t len = entry->st_size << 3;
+        for (size_t i = 0; i < len; ++i) {
+
+            if (result) {
+                copy_binary(trace, oracle);
+                modify(oracle, bblist);
+                result = false;
+            }
+            mutate(mem, i);
+            write_testcase(mem, entry, input);
+            mutate(mem, i);
+            result = fork_child(bblist, trace, oracle, input, output, false, entry->st_size);
+            // check time 
+            auto now =chrono::system_clock::now();
+            auto time_now = chrono::system_clock::to_time_t(now);
+            auto time_past = chrono::duration_cast<std::chrono::hours>(now - start_time);
+            if (time_past.count() > time_count) {
+                {
+                    ofstream filestream(stat_filename, std::ios::app);
+                    std::string data;
+                    data += std::to_string(time_past.count());
+                    data += "hrs,";
+                    data += std::to_string(time_now);
+                    data += ",";
+                    data += std::to_string(number_execs);
+                    data += "\n";
+                    filestream.write(data.c_str(), data.size());
+                    filestream.close();
+                    time_count *= TIME_SET;
+                }
+            }
+        }
         munmap(mem, entry->st_size);
-        result = fork_child(bblist, trace, oracle, input, output);
     }
     return 0;
 }
