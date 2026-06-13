@@ -40,10 +40,7 @@ void init_blocks(void)
 NO_COV 
 extern "C" void __sanitizer_cov_trace_pc_guard_init(uint32_t *start, uint32_t *stop)
 {
-    const char *write_out = std::getenv(WRITE_OUT);
-    if (write_out == nullptr) {
-        init_blocks();
-    }
+    init_blocks();
     if (start == stop || *start)
         return;
 
