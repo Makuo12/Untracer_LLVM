@@ -8,7 +8,6 @@
 #include <sys/shm.h>
 #include <map>
 #include <dirent.h>
-#include <capstone/capstone.h>
 #include <sys/stat.h> 
 
 #include <fstream>
@@ -42,6 +41,12 @@ size_t entry_total_count = 0;
 size_t number_execs = 0;
 
 int capacity = 100;
+
+enum class Result {
+    TRAP,
+    CRASH,
+
+}
 
 void add_file(const char *filename, const char *file_path, size_t size)
 {
@@ -175,69 +180,6 @@ void write_testcase(u8 *mem, Entry *entry, const char *input_file)
     file.close();
 }
 
-static bool write_trap(const char *bin_path, uintptr_t pc)
-{
-    uintptr_t offset = pc - 0x400000;
-    // 1. Open file in read/write binary mode
-    std::fstream f(bin_path, std::ios::in | std::ios::out | std::ios::binary);
-    if (!f.is_open())
-    {
-        fprintf(stderr, "  [!] failed to open %s\n", bin_path);
-        return false;
-    }
-    // 2. Read the next 15 bytes from this PC address to inspect them
-    uint8_t code_buffer[15];
-    f.seekg(offset, std::ios::beg);
-    f.read(reinterpret_cast<char *>(code_buffer), sizeof(code_buffer));
-    std::streamsize bytes_read = f.gcount();
-
-    if (bytes_read == 0)
-    {
-        return false;
-    }
-    // 3. Initialize Capstone Engine for x86_64
-    csh handle;
-    cs_insn *insn;
-    size_t count;
-
-    if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
-    {
-        fprintf(stderr, "  [!] Failed to initialize Capstone disassembler\n");
-        return false;
-    }
-
-    // Disassemble the buffer we read
-    count = cs_disasm(handle, code_buffer, bytes_read, pc, 1, &insn);
-
-    bool safe_to_write = false;
-    if (count > 0)
-    {
-        // If the disassembler managed to decode at least 1 valid instruction,
-        // verify that it actually matches the exact address we wanted to patch.
-        if (insn[0].address == pc)
-        {
-            safe_to_write = true;
-        }
-        cs_free(insn, count);
-    }
-    cs_close(&handle);
-
-    // 4. Perform the write safely if verified
-    if (!safe_to_write)
-    {
-        // This prevents the "ghost traps" caused by mid-instruction corruption!
-        printf("  [-] Skipping unsafe misalignment at PC: 0x%lx\n", pc);
-        return false;
-    }
-
-    // Move write pointer back to the validated offset location
-    f.seekp(offset, std::ios::beg);
-    uint8_t TRAP = 0xCC;
-    f.write(reinterpret_cast<const char *>(&TRAP), 1);
-    f.flush();
-
-    return f.good();
-}
 
 void copy_binary(const char *src_path, const char *dst_path)
 {
@@ -302,12 +244,6 @@ void init_trace_blocks(void)
         cout << "key failed to get shm id" << endl;
         exit(1);
     }
-    // __trace_shm_id = shm_id;
-    // if (atexit(__tracer_cleanup_trace_bits) != 0)
-    // {
-    //     shmctl(shm_id, IPC_RMID, NULL);
-    //     FATAL("Failed to register shared memory cleanup");
-    // }
     string shm_str = std::to_string(shm_id);
     setenv(SHM_ID_ENV, shm_str.c_str(), 1);
     trace_blocks = (u8 *)shmat(shm_id, 0, 0);
@@ -317,37 +253,6 @@ void init_trace_blocks(void)
         cout << "failed to link trace_bits to memory" << endl;
         exit(1);
     }
-}
-
-static void modify(const char *bin_path, map<int, uintptr_t> &bblist) {
-    // bool found = false;
-    int patched = 0;
-    for (auto begin = bblist.begin(); begin != bblist.end(); ++begin) {
-        // found = false;
-        if (virgin_blocks[begin->first] == 0)
-        {
-            if (write_trap(bin_path, begin->second))
-            {
-                ++patched;
-            }
-        }
-        // for (auto i : guards_hit)
-        // {
-        //     if (i == begin->first)
-        //     {
-        //         found = true;
-        //     }
-        // }
-        // if (found)
-        // {
-        //     continue;
-        // }
-        // if (write_trap(bin_path, begin->second))
-        // {
-        //     ++patched;
-        // }
-    }
-    cout << "Trap was insert by: " << patched << endl;
 }
 
 
@@ -375,7 +280,6 @@ std::string generateTimestampFilename(const std::string &extension = ".pdf")
 }
 
 void trace_coverage(
-    map<int, uintptr_t> &bblist,
     const char * trace,
     const char * input,
     const char * output,
@@ -449,27 +353,9 @@ bool fork_child(
     }
     int status;
     waitpid(pid, &status, 0);
-    // if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP)
-    // {
-    //     ptrace(PTRACE_CONT, pid, NULL, NULL); // let it keep running
-    //     waitpid(pid, &status, 0);  
-    // }
-    // if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP)
-    // {
-    //     struct user_regs_struct regs;
-    //     ptrace(PTRACE_GETREGS, pid, NULL, &regs);
-    //     u64 back = (regs.rip - 1);
-    //     u64 addr = back - 0x400000;
-    //     cout << "trap addre " << std::hex << addr << endl;
-    //     // Kill the child process
-    //     kill(pid, SIGKILL);
-    //     waitpid(pid, &status, 0); // reap the zombie
-    //     cout << "on trap" << endl;
-    //     trace_coverage(bblist, trace, input, output);
-    //     return true;           // wait for next stop
-    // }
     if (WIFSIGNALED(status))
     {
+        // This input cause a crash
         int term_sig = WTERMSIG(status);
         if (term_sig == SIGTRAP)
         {
