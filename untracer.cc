@@ -43,6 +43,16 @@ size_t number_execs = 0;
 
 int capacity = 100;
 
+char *crash_dir = NULL;
+char *trace_dir = NULL;
+
+enum class Result
+{
+    TRAP, // TRAP means new path
+    CRASH,
+    NORMAL
+};
+
 void add_file(const char *filename, const char *file_path, size_t size)
 {
     if (filename == nullptr || file_path == nullptr)
@@ -111,7 +121,7 @@ void files(Entry **entries, const char *in_dir, size_t *entry_count)
 
         char file_path[512];
         snprintf(file_path, sizeof(file_path), "%s/%s", in_dir, items[i]->d_name);
-
+        if (strstr(file_path, ".pdf") == NULL) continue;
         if (stat(file_path, &st) == 0)
         {
             // Resize dynamic array if capacity is reached (std::vector emulation)
@@ -146,6 +156,7 @@ void files(Entry **entries, const char *in_dir, size_t *entry_count)
         exit(1);
     }
 }
+
 
 void suppress_output()
 {
@@ -195,40 +206,40 @@ static bool write_trap(const char *bin_path, uintptr_t pc)
     {
         return false;
     }
-    // 3. Initialize Capstone Engine for x86_64
-    csh handle;
-    cs_insn *insn;
-    size_t count;
+    // // 3. Initialize Capstone Engine for x86_64
+    // csh handle;
+    // cs_insn *insn;
+    // size_t count;
 
-    if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
-    {
-        fprintf(stderr, "  [!] Failed to initialize Capstone disassembler\n");
-        return false;
-    }
+    // if (cs_open(CS_ARCH_X86, CS_MODE_64, &handle) != CS_ERR_OK)
+    // {
+    //     fprintf(stderr, "  [!] Failed to initialize Capstone disassembler\n");
+    //     return false;
+    // }
 
-    // Disassemble the buffer we read
-    count = cs_disasm(handle, code_buffer, bytes_read, pc, 1, &insn);
+    // // Disassemble the buffer we read
+    // count = cs_disasm(handle, code_buffer, bytes_read, pc, 1, &insn);
 
-    bool safe_to_write = false;
-    if (count > 0)
-    {
-        // If the disassembler managed to decode at least 1 valid instruction,
-        // verify that it actually matches the exact address we wanted to patch.
-        if (insn[0].address == pc)
-        {
-            safe_to_write = true;
-        }
-        cs_free(insn, count);
-    }
-    cs_close(&handle);
+    // bool safe_to_write = false;
+    // if (count > 0)
+    // {
+    //     // If the disassembler managed to decode at least 1 valid instruction,
+    //     // verify that it actually matches the exact address we wanted to patch.
+    //     if (insn[0].address == pc)
+    //     {
+    //         safe_to_write = true;
+    //     }
+    //     cs_free(insn, count);
+    // }
+    // cs_close(&handle);
 
-    // 4. Perform the write safely if verified
-    if (!safe_to_write)
-    {
-        // This prevents the "ghost traps" caused by mid-instruction corruption!
-        printf("  [-] Skipping unsafe misalignment at PC: 0x%lx\n", pc);
-        return false;
-    }
+    // // 4. Perform the write safely if verified
+    // if (!safe_to_write)
+    // {
+    //     // This prevents the "ghost traps" caused by mid-instruction corruption!
+    //     printf("  [-] Skipping unsafe misalignment at PC: 0x%lx\n", pc);
+    //     return false;
+    // }
 
     // Move write pointer back to the validated offset location
     f.seekp(offset, std::ios::beg);
@@ -294,6 +305,40 @@ void copy_binary(const char *src_path, const char *dst_path)
     }
 }
 
+
+std::string generateTimestampFilename(const std::string &extension = ".pdf")
+{
+    std::time_t now = std::time(nullptr);
+    std::tm *localTime = std::localtime(&now);
+
+    char buffer[32];
+    std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", localTime);
+
+    return std::string(buffer) + extension;
+}
+
+void write_to_file(const char *input, size_t file_size, Result result)
+{
+    string timestamp = generateTimestampFilename();
+    char buf[1024];
+    switch (result)
+    {
+    case Result::CRASH:
+    {
+        size_t size = snprintf(NULL, 0, "%s/%s", crash_dir, timestamp.c_str());
+        snprintf(buf, size + 1, "%s/%s", crash_dir, timestamp.c_str());
+        copy_binary(input, buf);
+    }
+    default:
+    {
+        size_t size = snprintf(NULL, 0, "%s/%s", trace_dir, timestamp.c_str());
+        snprintf(buf, size + 1, "%s/%s", trace_dir, timestamp.c_str());
+        copy_binary(input, buf);
+        add_file(timestamp.c_str(), buf, file_size);
+    }
+    }
+}
+
 void init_trace_blocks(void)
 {
     int shm_id = shmget(IPC_PRIVATE, MAP_SIZE, IPC_CREAT | IPC_EXCL | 0666);
@@ -321,15 +366,16 @@ void init_trace_blocks(void)
 
 static void modify(const char *bin_path, map<int, uintptr_t> &bblist) {
     // bool found = false;
-    int patched = 0;
+    // int patched = 0;
     for (auto begin = bblist.begin(); begin != bblist.end(); ++begin) {
         // found = false;
         if (virgin_blocks[begin->first] == 0)
         {
-            if (write_trap(bin_path, begin->second))
-            {
-                ++patched;
-            }
+            write_trap(bin_path, begin->second);
+            // if (write_trap(bin_path, begin->second))
+            // {
+            //     ++patched;
+            // }
         }
         // for (auto i : guards_hit)
         // {
@@ -347,7 +393,7 @@ static void modify(const char *bin_path, map<int, uintptr_t> &bblist) {
         //     ++patched;
         // }
     }
-    cout << "Trap was insert by: " << patched << endl;
+    // cout << "Trap was insert by: " << patched << endl;
 }
 
 
@@ -363,22 +409,9 @@ bool has_new_block(void)
     return found;
 }
 
-std::string generateTimestampFilename(const std::string &extension = ".pdf")
-{
-    std::time_t now = std::time(nullptr);
-    std::tm *localTime = std::localtime(&now);
-
-    char buffer[32];
-    std::strftime(buffer, sizeof(buffer), "%Y%m%d_%H%M%S", localTime);
-
-    return std::string(buffer) + extension;
-}
-
-void trace_coverage(
-    map<int, uintptr_t> &bblist,
+Result trace_coverage(
     const char * trace,
     const char * input,
-    const char * output,
     const bool first_pass,
     const size_t file_size
 )
@@ -402,15 +435,21 @@ void trace_coverage(
     {
         int status;
         waitpid(pid, &status, 0);
-        bool result = has_new_block();
-        if (result && !first_pass) {
-            // We only want to write out input if we are not in first pass and new block found
-            string timestamp = generateTimestampFilename();
-            char buf[1024];
-            size_t size = snprintf(NULL, 0, "./output/%s", timestamp.c_str());
-            snprintf(buf, size + 1, "./output/%s", timestamp.c_str());
-            copy_binary(input, buf);
-            add_file(timestamp.c_str(), buf, file_size);
+        if (WIFSIGNALED(status))
+        {
+            // write_to_file(input, file_size, Result::CRASH);
+            return Result::CRASH;
+        }
+        else
+        {
+            bool result = has_new_block();
+            if (result && !first_pass)
+            {
+                // We only want to write out input if we are not in first pass and new block found
+                // write_to_file(input, file_size, Result::TRAP);
+                return Result::TRAP;
+            }
+            return Result::NORMAL;
         }
     }
     else
@@ -421,12 +460,10 @@ void trace_coverage(
 }
 
 
-bool fork_child(
-    map<int, uintptr_t> &bblist,
+Result fork_child(
     const char * trace,
     const char * oracle,
     const char * input,
-    const char * output,
     const bool first_pass,
     const size_t file_size
 ) {
@@ -434,6 +471,7 @@ bool fork_child(
     argv[0] = const_cast<char *>(oracle);
     argv[1] = const_cast<char *>(input);
     argv[2] = nullptr;
+    memset(trace_blocks, 0, MAP_SIZE);
     ++number_execs;
     // c passed in buf means nothing the env set just ensures there is no tracing happening
     char buf[1024];
@@ -449,36 +487,20 @@ bool fork_child(
     }
     int status;
     waitpid(pid, &status, 0);
-    // if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP)
-    // {
-    //     ptrace(PTRACE_CONT, pid, NULL, NULL); // let it keep running
-    //     waitpid(pid, &status, 0);  
-    // }
-    // if (WIFSTOPPED(status) && WSTOPSIG(status) == SIGTRAP)
-    // {
-    //     struct user_regs_struct regs;
-    //     ptrace(PTRACE_GETREGS, pid, NULL, &regs);
-    //     u64 back = (regs.rip - 1);
-    //     u64 addr = back - 0x400000;
-    //     cout << "trap addre " << std::hex << addr << endl;
-    //     // Kill the child process
-    //     kill(pid, SIGKILL);
-    //     waitpid(pid, &status, 0); // reap the zombie
-    //     cout << "on trap" << endl;
-    //     trace_coverage(bblist, trace, input, output);
-    //     return true;           // wait for next stop
-    // }
     if (WIFSIGNALED(status))
     {
         int term_sig = WTERMSIG(status);
         if (term_sig == SIGTRAP)
         {
-            cout << "on trap signal" << endl;
-            trace_coverage(bblist, trace, input, output, first_pass, file_size);
-            return true;           // wait for next stop
+            // cout << "on trap signal" << endl;
+            trace_coverage(trace, input, first_pass, file_size);
+            return Result::TRAP;           // wait for next stop
+        } else {
+            // write_to_file(input, file_size, Result::CRASH);
+            return Result::CRASH;
         }
     }
-    return false;
+    return Result::NORMAL;
 }
 
 
@@ -530,15 +552,14 @@ u8 * read_file(Entry *entry) {
 }
 
 void first_pass(Entry *entries, size_t *entry_count, const char * trace,
-    const char * oracle, map<int, uintptr_t> &bblist, const char * input,
-    const char * output
+    const char * oracle, map<int, uintptr_t> &bblist, const char * input
 ) {
-    bool result = false;
+    Result result = Result::NORMAL;
     for (size_t i = 0; i < *entry_count; ++i) {
-        if (result) {
+        if (result == Result::TRAP) {
             copy_binary(trace, oracle);
             modify(oracle, bblist);
-            result = false;
+            result = Result::NORMAL;
         }
         Entry * entry = &entries[i];
         if (entry->has_issues) {
@@ -550,8 +571,30 @@ void first_pass(Entry *entries, size_t *entry_count, const char * trace,
         }
         write_testcase(mem, entry, input);
         munmap(mem, entry->st_size);
-        result = fork_child(bblist, trace, oracle, input, output, true, entry->st_size);
+        result = fork_child(trace, oracle, input, true, entry->st_size);
+        if (result == Result::CRASH)
+        {
+            entry->has_issues = true;
+            result = Result::NORMAL;
+        }
     }
+}
+
+void setup_dir(const char *output)
+{
+    size_t crash_name_size = snprintf(NULL, 0, "%s/%s", output, "crash");
+    size_t trace_name_size = snprintf(NULL, 0, "%s/%s", output, "trace");
+    crash_dir = (char *)malloc(crash_name_size + 1);
+    trace_dir = (char *)malloc(trace_name_size + 1);
+    if (crash_dir == NULL || trace_dir == NULL)
+    {
+        cout << "could not setup crash and trace dir" << endl;
+        exit(1);
+    }
+    snprintf(crash_dir, crash_name_size + 1, "%s/%s", output, "crash");
+    snprintf(trace_dir, trace_name_size + 1, "%s/%s", output, "trace");
+    mkdir(crash_dir, 0777);
+    mkdir(trace_dir, 0777);
 }
 
 void mutate(u8 *mem, int position)
@@ -607,6 +650,7 @@ int main(int argc, char *argv[])
     init_trace_blocks();
     memset(trace_blocks, 0, MAP_SIZE);
     memset(virgin_blocks, 0, MAP_SIZE);
+    setup_dir(output);
     files(&all_entries, in_dir, &entry_total_count);
     setup_bblist(bblist, blist);
     copy_binary(trace, oracle);
@@ -614,33 +658,23 @@ int main(int argc, char *argv[])
     string stat_filename = output + string("/stats");
     {
         ofstream filestream(stat_filename);
-        std::string header = "elapsed,current,execs\n";
+        std::string header = "elapsed,current,execs,blocks\n";
         filestream.write(header.c_str(), header.size());
         filestream.close();
     }
     std::cout << "Successfully loaded " << bblist.size() << " guard indices into the vector.\n";
     std::cout << "Running full pass of all inputs" << endl;
-    first_pass(all_entries, &entry_total_count, trace, oracle, bblist, input, output);
+    first_pass(all_entries, &entry_total_count, trace, oracle, bblist, input);
     std::cout << "Done with full pass of all inputs" << endl;
     std::cout << "Running fuzzer with mutations" << endl;
     cout << "Setting up timer" << endl;
     auto start_time = std::chrono::system_clock::now();
     std::time_t now_t = std::chrono::system_clock::to_time_t(start_time);
     std::cout << "Start time: " << std::ctime(&now_t);
-    bool result = false;
+    Result result = Result::NORMAL;
     time_t time_count = 1 * TIME_SET;
     size_t current = 0;
     while (true) {
-        if (current >= entry_total_count) {
-            current = 0;
-            auto count = 0;
-            for (int i = 0; i < MAP_SIZE; ++i) {
-                if (trace_blocks[i] == 1) {
-                    count++;
-                }
-            }
-            cout << "full pass done" << " trace count: " << count << endl;
-        }
         Entry * entry = &all_entries[current++];
         if (entry->has_issues) {
             continue;
@@ -651,33 +685,51 @@ int main(int argc, char *argv[])
         }
         size_t len = entry->st_size << 3;
         for (size_t i = 0; i < len; ++i) {
-
-            if (result) {
+            if (result == Result::TRAP) {
                 copy_binary(trace, oracle);
                 modify(oracle, bblist);
-                result = false;
+                result = Result::TRAP;
             }
             mutate(mem, i);
             write_testcase(mem, entry, input);
             mutate(mem, i);
-            result = fork_child(bblist, trace, oracle, input, output, false, entry->st_size);
-            // check time 
-            auto now =chrono::system_clock::now();
-            auto time_now = chrono::system_clock::to_time_t(now);
-            auto time_past = chrono::duration_cast<std::chrono::hours>(now - start_time);
-            if (time_past.count() > time_count) {
+            result = fork_child(trace, oracle, input, false, entry->st_size);
+            if (result == Result::CRASH)
+            {
+                entry->has_issues = true;
+                result = Result::NORMAL;
+                break;
+            }
+            // check time
+            {
+                auto now = chrono::system_clock::now();
+                auto time_now = chrono::system_clock::to_time_t(now);
+                auto time_past = chrono::duration_cast<std::chrono::hours>(now - start_time);
+                if (time_past.count() > time_count)
                 {
-                    ofstream filestream(stat_filename, std::ios::app);
-                    std::string data;
-                    data += std::to_string(time_past.count());
-                    data += "hrs,";
-                    data += std::to_string(time_now);
-                    data += ",";
-                    data += std::to_string(number_execs);
-                    data += "\n";
-                    filestream.write(data.c_str(), data.size());
-                    filestream.close();
-                    time_count *= TIME_SET;
+                    {
+                        auto blocks_hit = 0;
+                        for (int i = 0; i < MAP_SIZE; ++i)
+                        {
+                            if (virgin_blocks[i] == 1)
+                            {
+                                ++blocks_hit;
+                            }
+                        }
+                        ofstream filestream(stat_filename, std::ios::app);
+                        std::string data;
+                        data += std::to_string(time_past.count());
+                        data += "hrs,";
+                        data += std::to_string(time_now);
+                        data += ",";
+                        data += std::to_string(number_execs);
+                        data += ",";
+                        data += std::to_string(blocks_hit);
+                        data += "\n";
+                        filestream.write(data.c_str(), data.size());
+                        filestream.close();
+                        time_count *= TIME_SET;
+                    }
                 }
             }
         }
