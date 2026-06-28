@@ -1,0 +1,14 @@
+services:
+  untracer:
+    build:
+      context: .
+    platform: linux/amd64
+    stdin_open: true
+    tty: true
+
+
+# # Build a specific service
+# docker compose build xpdf-angora
+
+# # Build all services
+# docker compose build

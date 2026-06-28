@@ -1,7 +1,8 @@
+wrap=$(pwd)
+
 rm -rf output
 mkdir -p output
 clang++ -c libtracer.cpp -I include -o ./output/tracer.o
-wrap="/home/makuo12/Documents/forte-research/untracer_llvm"
 
 echo "Building xpdf with custom coverage tracer..."
 cd $wrap/xpdf-4.06_2
@@ -23,11 +24,11 @@ cmake -DCMAKE_BUILD_TYPE=Release \
 # 2. Build the pdftotext utility
 make pdftotext
 
-# 3. Copy the compiled binary back to your output directory (fixed typo)
+# 3. Copy the compiled binary back to your output directory
 cp ./xpdf/pdftotext $wrap/output/pdftotext
-cd ../..
+cd $wrap
 
-# 4. Setup basic blocks (gotten from  __sanitizer_cov_pcs_init)
-export WRITE_OUT="./output/text" 
-export COVERAGE="./output/coverage_log.txt" 
-./output/pdftotext > /dev/null 2>&1
+# 4. Setup basic blocks (gotten from __sanitizer_cov_pcs_init)
+export WRITE_OUT="$wrap/output/text"
+export COVERAGE="$wrap/output/coverage_log.txt"
+./output/pdftotext > /dev/null 2>&1 || true
